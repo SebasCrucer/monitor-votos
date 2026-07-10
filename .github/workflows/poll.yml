@@ -1,0 +1,29 @@
+name: poll-votes
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: poll
+  cancel-in-progress: false
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Scrape votes
+        run: python3 scraper.py
+      - name: Commit history
+        run: |
+          git config user.name "vote-monitor[bot]"
+          git config user.email "actions@github.com"
+          git add docs/history.json
+          git diff --cached --quiet && echo "sin cambios" && exit 0
+          git commit -m "snapshot $(date -u +%Y-%m-%dT%H:%MZ)"
+          git pull --rebase origin main
+          git push

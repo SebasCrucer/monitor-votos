@@ -1,0 +1,186 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Monitor de votos — Platanus Hack 26-MX</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  :root{
+    --surface:#1a1a19; --page:#0d0d0d; --ink:#ffffff; --ink2:#c3c2b7; --muted:#898781;
+    --grid:#2c2c2a; --axis:#383835; --border:rgba(255,255,255,.10); --good:#0ca30c;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--page);color:var(--ink);
+    font:14px/1.45 system-ui,-apple-system,"Segoe UI",sans-serif;padding:20px}
+  h1{font-size:17px;margin:0 0 2px}
+  .sub{color:var(--muted);font-size:12px;margin-bottom:16px}
+  .cards{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+  .card{background:var(--surface);border:1px solid var(--border);border-radius:10px;
+    padding:12px 16px;min-width:150px}
+  .card .k{color:var(--muted);font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+  .card .v{font-size:26px;font-weight:650;margin-top:2px}
+  .card .d{font-size:12px;color:var(--ink2)}
+  .up{color:var(--good)}
+  .panel{background:var(--surface);border:1px solid var(--border);border-radius:10px;
+    padding:16px;margin-bottom:16px}
+  .panel h2{font-size:13px;margin:0 0 10px;color:var(--ink2);font-weight:600}
+  svg text{font:11px system-ui,sans-serif;fill:var(--muted)}
+  .chartwrap{position:relative;overflow-x:auto}
+  #tip{position:absolute;pointer-events:none;background:#0d0d0dee;border:1px solid var(--border);
+    border-radius:6px;padding:6px 9px;font-size:12px;display:none;white-space:nowrap;z-index:2}
+  table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
+  th,td{text-align:right;padding:5px 10px;border-bottom:1px solid var(--grid);font-size:13px}
+  th{color:var(--muted);font-weight:500;font-size:11px;text-transform:uppercase;letter-spacing:.03em}
+  td:first-child,th:first-child,td:nth-child(2),th:nth-child(2){text-align:left}
+  tr.me td{background:rgba(57,135,229,.12);font-weight:600}
+  .swatch{display:inline-block;width:9px;height:9px;border-radius:2px;margin-right:7px;vertical-align:baseline}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:8px;font-size:12px;color:var(--ink2)}
+  .err{color:#e66767;font-size:12px}
+</style>
+<body>
+<h1>Monitor de votos — Platanus Hack 26-MX</h1>
+<div class="sub" id="status">cargando…</div>
+<div class="cards" id="cards"></div>
+<div class="panel">
+  <h2>Evolución de votos (top 8 + Ikarus)</h2>
+  <div class="chartwrap"><svg id="chart" width="100%" height="340"></svg><div id="tip"></div></div>
+  <div class="legend" id="legend"></div>
+</div>
+<div class="panel">
+  <h2>Ranking, tendencia y predicción</h2>
+  <table id="tbl"></table>
+</div>
+<script>
+const PAL=["#3987e5","#199e70","#c98500","#008300","#9085e9","#e66767","#d55181","#d95926"];
+let DATA=null;
+
+function fmtT(t){const d=new Date(t*1000);return d.toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit'})}
+
+// regresión lineal sobre puntos [t,count] -> pendiente votos/seg
+function slope(pts){
+  const n=pts.length; if(n<2) return 0;
+  let sx=0,sy=0,sxx=0,sxy=0;
+  for(const[x,y]of pts){sx+=x;sy+=y;sxx+=x*x;sxy+=x*y}
+  const den=n*sxx-sx*sx; return den?(n*sxy-sx*sy)/den:0;
+}
+
+function seriesFor(slug,snaps){return snaps.filter(s=>slug in s.counts).map(s=>[s.t,s.counts[slug]])}
+function valueAt(pts,t){ // último valor <= t
+  let v=null; for(const[x,y]of pts){if(x<=t)v=y;else break} return v;
+}
+
+function render(){
+  const snaps=DATA.snapshots; if(!snaps.length){document.getElementById('status').textContent='Aún sin datos — primer sondeo en curso…';return}
+  const last=snaps[snaps.length-1], now=last.t;
+  const slugs=Object.keys(last.counts).sort((a,b)=>last.counts[b]-last.counts[a]);
+  const my=DATA.my, names=DATA.names;
+  const H=3600;
+
+  // status
+  document.getElementById('status').innerHTML=
+    `Última actualización: ${fmtT(now)} · ${snaps.length} muestras desde ${fmtT(snaps[0].t)} · sondeo cada ${DATA.pollSeconds}s`+
+    (DATA.lastError?` · <span class="err">error: ${DATA.lastError}</span>`:'');
+
+  // métricas por proyecto
+  const rows=slugs.map(slug=>{
+    const pts=seriesFor(slug,snaps), cur=pts[pts.length-1][1];
+    const v30=valueAt(pts,now-1800), v60=valueAt(pts,now-H);
+    const recent=pts.filter(p=>p[0]>=now-H);
+    const perHr=slope(recent.length>=3?recent:pts)*H;
+    return {slug,name:names[slug]||slug,cur,
+      d30:v30==null?null:cur-v30, d60:v60==null?null:cur-v60,
+      perHr, pred1:Math.round(cur+perHr), pred3:Math.round(cur+3*perHr)};
+  });
+  const rank=Object.fromEntries(rows.map((r,i)=>[r.slug,i+1]));
+  const me=rows.find(r=>r.slug===my);
+
+  // cards de Ikarus
+  if(me){
+    const above=rows[rank[my]-2];
+    const catchUp=above&&me.perHr>above.perHr
+      ? (above.cur-me.cur)/(me.perHr-above.perHr) : null;
+    document.getElementById('cards').innerHTML=[
+      card('Ikarus — votos',me.cur, me.d60!=null?`<span class="up">+${me.d60}</span> última hora`:''),
+      card('Posición',`#${rank[my]} / ${rows.length}`, above?`${above.cur-me.cur} votos tras ${above.name}`:'¡primer lugar!'),
+      card('Tendencia',`${me.perHr>=0?'+':''}${me.perHr.toFixed(1)}/h`,'regresión última hora'),
+      card('Predicción +1h',me.pred1, `+3h: ${me.pred3}`),
+      card('Alcance al de arriba', catchUp&&catchUp>0&&catchUp<48*3600?`~${(catchUp/3600).toFixed(1)} h`:'—',
+        catchUp?'si se mantienen las tendencias':'tendencia no alcanza'),
+    ].join('');
+  }
+
+  drawChart(rows.slice(0,8).map(r=>r.slug).concat(rows.slice(8).some(r=>r.slug===my)?[my]:[]),snaps,names,my);
+
+  // tabla
+  document.getElementById('tbl').innerHTML=
+    '<tr><th>#</th><th>Proyecto</th><th>Votos</th><th>Δ30m</th><th>Δ1h</th><th>Votos/h</th><th>Pred +1h</th><th>Pred +3h</th><th>Gap vs Ikarus</th></tr>'+
+    rows.map((r,i)=>`<tr class="${r.slug===my?'me':''}"><td>${i+1}</td><td>${r.name}</td><td>${r.cur}</td>`+
+      `<td>${r.d30==null?'—':(r.d30>0?'+':'')+r.d30}</td><td>${r.d60==null?'—':(r.d60>0?'+':'')+r.d60}</td>`+
+      `<td>${r.perHr>=0?'+':''}${r.perHr.toFixed(1)}</td><td>${r.pred1}</td><td>${r.pred3}</td>`+
+      `<td>${me?(r.cur-me.cur>0?'+':'')+(r.cur-me.cur):'—'}</td></tr>`).join('');
+}
+function card(k,v,d){return `<div class="card"><div class="k">${k}</div><div class="v">${v}</div><div class="d">${d}</div></div>`}
+
+let chartGeom=null;
+function drawChart(slugs,snaps,names,my){
+  const svg=document.getElementById('chart');
+  const W=svg.clientWidth||900,Hh=340,m={t:14,r:120,b:26,l:44};
+  const t0=snaps[0].t,t1=snaps[snaps.length-1].t||t0+1;
+  const all=slugs.flatMap(s=>seriesFor(s,snaps).map(p=>p[1]));
+  const y0=Math.max(0,Math.min(...all)-2),y1=Math.max(...all)+2;
+  const X=t=>m.l+(t-t0)/Math.max(1,(t1-t0))*(W-m.l-m.r);
+  const Y=v=>m.t+(1-(v-y0)/Math.max(1,(y1-y0)))*(Hh-m.t-m.b);
+  let g='';
+  // grid + ejes
+  const steps=5;
+  for(let i=0;i<=steps;i++){
+    const v=y0+(y1-y0)*i/steps, y=Y(v);
+    g+=`<line x1="${m.l}" x2="${W-m.r}" y1="${y}" y2="${y}" stroke="var(--grid)"/>`+
+       `<text x="${m.l-8}" y="${y+4}" text-anchor="end">${Math.round(v)}</text>`;
+  }
+  for(let i=0;i<=4;i++){
+    const t=t0+(t1-t0)*i/4;
+    g+=`<text x="${X(t)}" y="${Hh-8}" text-anchor="middle">${fmtT(t)}</text>`;
+  }
+  g+=`<line x1="${m.l}" x2="${W-m.r}" y1="${Hh-m.b}" y2="${Hh-m.b}" stroke="var(--axis)"/>`;
+  // series
+  const colorOf={},lines=[];
+  slugs.forEach((s,i)=>{
+    const c=s===my?"#eda100":PAL[i%PAL.length]; colorOf[s]=c;
+    const pts=seriesFor(s,snaps);
+    const d=pts.map((p,j)=>`${j?'L':'M'}${X(p[0]).toFixed(1)},${Y(p[1]).toFixed(1)}`).join('');
+    const lastP=pts[pts.length-1];
+    lines.push(`<path d="${d}" fill="none" stroke="${c}" stroke-width="${s===my?3:2}" stroke-linejoin="round"/>`+
+      `<text x="${W-m.r+6}" y="${Y(lastP[1])+4}" fill="${c}" font-weight="${s===my?'700':'400'}">${(names[s]||s).slice(0,16)} ${lastP[1]}</text>`);
+  });
+  svg.setAttribute('viewBox',`0 0 ${W} ${Hh}`);
+  svg.innerHTML=g+lines.join('')+`<line id="xh" y1="${m.t}" y2="${Hh-m.b}" stroke="var(--axis)" visibility="hidden"/>`;
+  chartGeom={X,Y,t0,t1,m,W,slugs,colorOf};
+  // legend
+  document.getElementById('legend').innerHTML=slugs.map(s=>
+    `<span><span class="swatch" style="background:${colorOf[s]}"></span>${names[s]||s}</span>`).join('');
+  // hover
+  svg.onmousemove=e=>{
+    const r=svg.getBoundingClientRect(), x=(e.clientX-r.left)*(W/r.width);
+    if(x<m.l||x>W-m.r){svg.onmouseleave(); return}
+    const t=t0+(x-m.l)/(W-m.l-m.r)*(t1-t0);
+    // snapshot más cercano
+    let best=snaps[0]; for(const s of snaps) if(Math.abs(s.t-t)<Math.abs(best.t-t)) best=s;
+    const xh=document.getElementById('xh');
+    xh.setAttribute('x1',X(best.t)); xh.setAttribute('x2',X(best.t)); xh.setAttribute('visibility','visible');
+    const tip=document.getElementById('tip');
+    tip.style.display='block';
+    tip.style.left=Math.min(e.clientX-r.left+14, r.width-190)+'px';
+    tip.style.top=(e.clientY-r.top+10)+'px';
+    tip.innerHTML=`<b>${fmtT(best.t)}</b><br>`+slugs.map(s=>
+      `<span class="swatch" style="background:${colorOf[s]}"></span>${(names[s]||s).slice(0,16)}: ${best.counts[s]??'—'}`).join('<br>');
+  };
+  svg.onmouseleave=()=>{document.getElementById('tip').style.display='none';
+    document.getElementById('xh').setAttribute('visibility','hidden')};
+}
+
+async function refresh(){
+  try{DATA=await fetch('/data').then(r=>r.json()); render();}
+  catch(e){document.getElementById('status').innerHTML=`<span class="err">sin conexión al monitor: ${e}</span>`}
+}
+refresh(); setInterval(refresh,30000);
+window.addEventListener('resize',()=>DATA&&render());
+</script>

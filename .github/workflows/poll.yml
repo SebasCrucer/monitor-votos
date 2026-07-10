@@ -6,6 +6,7 @@ on:
 
 permissions:
   contents: write
+  actions: write
 
 concurrency:
   group: poll
@@ -44,3 +45,7 @@ jobs:
             fi
             sleep 60
           done
+      - name: Relanzarse (cadena independiente del cron)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run poll-votes --ref main || true

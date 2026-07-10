@@ -1,7 +1,7 @@
 name: poll-votes
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "*/20 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -9,21 +9,38 @@ permissions:
 
 concurrency:
   group: poll
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   poll:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - name: Scrape votes
-        run: python3 scraper.py
-      - name: Commit history
+      - name: Poll cada 60s durante ~25 min, publicando a la rama data
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
+          set -u
+          # histórico previo desde la rama data (si existe)
+          if git fetch origin data 2>/dev/null; then
+            git show origin/data:history.json > docs/history.json || true
+          fi
+          mkdir -p /tmp/data
+          cd /tmp/data
+          git init -q -b data
           git config user.name "vote-monitor[bot]"
           git config user.email "actions@github.com"
-          git add docs/history.json
-          git diff --cached --quiet && echo "sin cambios" && exit 0
-          git commit -m "snapshot $(date -u +%Y-%m-%dT%H:%MZ)"
-          git pull --rebase origin main
-          git push
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+          cd "$GITHUB_WORKSPACE"
+          END=$((SECONDS + 1500))
+          while [ $SECONDS -lt $END ]; do
+            if python3 scraper.py; then
+              cp docs/history.json /tmp/data/history.json
+              ( cd /tmp/data \
+                && git add history.json \
+                && { git commit -q -m "snapshot $(date -u +%H:%MZ)" || true; } \
+                && git push -q -f origin data ) || echo "push falló, reintento en el siguiente ciclo"
+            fi
+            sleep 60
+          done
